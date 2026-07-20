@@ -1,0 +1,1 @@
+"""GUI package (PyQt5)."""
