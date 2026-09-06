@@ -30,10 +30,26 @@ class ServiceRow:
         self.available = service.available_profiles(all_profiles)
         for pid in self.available:
             self.combo.addItem(profile_display(pid), userData=pid)
+
+        # --- Автоматическая синхронизация чекбокса и комбобокса ---
+        self.combo.activated.connect(self._on_combo_changed)
+        self.check.toggled.connect(self._on_check_toggled)
+
         if not self.available:
             self.name.setToolTip("Нет IP-адресов ни для одного варианта. Заполните во вкладке «Каталог».")
             self.combo.setEnabled(False)
             self.check.setEnabled(False)
+
+    def _on_combo_changed(self) -> None:
+        """Если выбрали DNS — автоматически ставим галочку; если «— выкл —» — снимаем."""
+        self.check.setChecked(bool(self.combo.currentData()))
+
+    def _on_check_toggled(self, checked: bool) -> None:
+        """Если поставили галочку, а профиль не выбран — выбираем первый доступный."""
+        if checked and not self.combo.currentData() and self.available:
+            self.combo.setCurrentIndex(1)
+        elif not checked and self.combo.currentIndex() != 0:
+            self.combo.setCurrentIndex(0)
 
     def selected_profile(self) -> str:
         if not self.check.isChecked():
