@@ -48,7 +48,7 @@ class MainWindow(QMainWindow):
         self.tabs.setCornerWidget(self.theme_btn)
         self._sync_theme_btn()
 
-        self.hosts_tab = HostsTab(self.catalog)
+        self.hosts_tab = HostsTab(self.catalog, on_changed=lambda: self.catalog_tab.rebuild())
         self.dns_tab = DnsTab()
         self.catalog_tab = CatalogTab(self.catalog, on_changed=self._on_catalog_changed)
 

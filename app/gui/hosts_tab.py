@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QGridLayout, QLabel,
     QCheckBox, QComboBox, QPushButton, QLineEdit, QMessageBox, QFrame,
-    QFileDialog, QInputDialog,
+    QFileDialog, QInputDialog, QDialog,
 )
 
 from app.catalog import Catalog, load_selection, save_selection
@@ -67,9 +67,10 @@ class ServiceRow:
 
 
 class HostsTab(QWidget):
-    def __init__(self, catalog: Catalog) -> None:
+    def __init__(self, catalog: Catalog, on_changed=None) -> None:
         super().__init__()
         self.catalog = catalog
+        self.on_changed = on_changed
         self.manager = HostsManager()
         self.rows: list[ServiceRow] = []
 
@@ -92,6 +93,18 @@ class HostsTab(QWidget):
         btn_none.clicked.connect(self._disable_all)
         top.addWidget(btn_all)
         top.addWidget(btn_none)
+
+        btn_add = QPushButton("+ Добавить сайт")
+        btn_add.setStyleSheet("font-weight:bold;")
+        btn_add.setToolTip("Добавить свой сайт/сервис с доменами и группой")
+        btn_add.clicked.connect(self._add_custom_service)
+        top.addWidget(btn_add)
+
+        btn_add_cat = QPushButton("+ Категория")
+        btn_add_cat.setToolTip("Создать новую категорию для группировки сайтов")
+        btn_add_cat.clicked.connect(self._create_category)
+        top.addWidget(btn_add_cat)
+
         btn_detect = QPushButton("Считать из hosts")
         btn_detect.setToolTip("Определить уже применённые настройки из текущего файла hosts")
         btn_detect.clicked.connect(self.rebuild)
@@ -172,10 +185,15 @@ class HostsTab(QWidget):
             if cat != prev_cat:
                 hdr = QFrame()
                 hdr.setObjectName("catHeader")
+                hdr.setContextMenuPolicy(Qt.CustomContextMenu)
+                hdr.customContextMenuRequested.connect(
+                    lambda pos, c=cat: self._show_category_context_menu(pos, c)
+                )
                 hl = QHBoxLayout(hdr)
                 hl.setContentsMargins(8, 4, 8, 4)
                 title = QLabel(cat)
                 title.setObjectName("catTitle")
+                title.setToolTip("Правый клик: переименовать категорию")
                 hl.addWidget(title)
                 hl.addStretch(1)
                 gl = QLabel("Всей группе:")
@@ -193,9 +211,25 @@ class HostsTab(QWidget):
                 self.headers.append({"category": cat, "row": r, "widget": hdr, "combo": gcombo})
                 prev_cat = cat
                 r += 1
+
             row = ServiceRow(svc, profiles, self.catalog.profile_display)
             row.grid_row = r
             row.category = cat
+
+            # Контекстное меню и подсказки для сервиса
+            row.name.setContextMenuPolicy(Qt.CustomContextMenu)
+            row.name.customContextMenuRequested.connect(
+                lambda pos, s=svc: self._show_service_context_menu(pos, s)
+            )
+            # Двойной клик на имени открывает редактирование
+            row.name.mouseDoubleClickEvent = lambda evt, s=svc: self._edit_service_modal(s)
+
+            if svc.custom:
+                row.name.setText(f"{svc.name}  ★")
+                row.name.setToolTip("Пользовательский сайт (★). Двойной клик — редактировать, правый клик — меню действий.")
+            else:
+                row.name.setToolTip("Встроенный сайт. Двойной клик — просмотр/редактирование, правый клик — меню.")
+
             self.grid.addWidget(row.check, r, 0, alignment=Qt.AlignCenter)
             self.grid.addWidget(row.color, r, 1, alignment=Qt.AlignCenter)
             self.grid.addWidget(row.name, r, 2)
@@ -334,3 +368,172 @@ class HostsTab(QWidget):
             QMessageBox.information(self, "Готово", message)
         else:
             QMessageBox.warning(self, "Ошибка", message)
+    def _save_new_service(self, data: dict) -> None:
+        """Единый метод сохранения нового сервиса в каталог."""
+        from app.catalog import Service, default_catalog_path
+
+        svc_name = data["name"]
+        if self.catalog.get_service(svc_name):
+            QMessageBox.warning(self, "Ошибка", f"Сервис «{svc_name}» уже существует.")
+            return
+
+        mode = data["mode"]
+        svc = Service(
+            name=svc_name,
+            category=data["category"],
+            mode=mode,
+            custom=True,
+        )
+
+        for dom in data["domains"]:
+            if data["ips"]:
+                for ip in data["ips"]:
+                    if mode == "hosts":
+                        svc.add_domain_ip(dom, "hosts", ip)
+                    else:
+                        for pid in self.catalog.profiles:
+                            svc.add_domain_ip(dom, pid, ip)
+            else:
+                svc.order.append(dom)
+                svc.domains.setdefault(dom, {})
+
+        self.catalog.services.append(svc)
+        self.catalog.save_single(default_catalog_path())
+        self.rebuild()
+        if self.on_changed:
+            self.on_changed()
+        QMessageBox.information(
+            self, "Готово",
+            f"Сервис «{svc_name}» успешно добавлен в категорию «{data['category']}»."
+        )
+
+    def _add_custom_service(self) -> None:
+        from app.gui.add_service_dialog import AddServiceDialog
+        existing_cats = [s.category for s in self.catalog.services]
+        dlg = AddServiceDialog(existing_cats, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._save_new_service(dlg.get_data())
+    # -------------------------------------------------- service context menu
+    def _show_service_context_menu(self, pos, service) -> None:
+        from PyQt5.QtWidgets import QMenu, QAction
+        from app.catalog import default_catalog_path
+
+        menu = QMenu(self)
+
+        # 1. Редактировать
+        act_edit = menu.addAction("✏️ Редактировать сервис / домены…")
+        act_edit.triggered.connect(lambda: self._edit_service_modal(service))
+
+        # 2. Переместить в категорию (подменю)
+        move_menu = menu.addMenu("📁 Переместить в категорию")
+        all_cats = sorted(set(filter(None, [s.category for s in self.catalog.services])))
+        for cat in all_cats:
+            if cat != service.category:
+                act_cat = move_menu.addAction(cat)
+                act_cat.triggered.connect(lambda _, c=cat, s=service: self._move_service_to_category(s, c))
+
+        move_menu.addSeparator()
+        act_new_cat = move_menu.addAction("＋ Создать новую категорию…")
+        act_new_cat.triggered.connect(lambda _, s=service: self._move_service_to_new_category(s))
+
+        menu.addSeparator()
+
+        # 3. Удалить сервис
+        act_del = menu.addAction("🗑️ Удалить сервис")
+        if not service.custom:
+            act_del.setEnabled(False)
+            act_del.setText("🗑️ Удалить (встроенный сервис защищен)")
+        else:
+            act_del.triggered.connect(lambda _, s=service: self._delete_custom_service(s))
+
+        menu.exec_(self.sender().mapToGlobal(pos))
+
+    def _edit_service_modal(self, service) -> None:
+        from app.gui.catalog_tab import DomainEditor
+        from app.catalog import default_catalog_path
+
+        dlg = DomainEditor(self.catalog, service, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self.catalog.save_single(default_catalog_path())
+            self.rebuild()
+            if self.on_changed:
+                self.on_changed()
+
+    def _move_service_to_category(self, service, new_category: str) -> None:
+        from app.catalog import default_catalog_path
+        service.category = new_category.strip()
+        self.catalog.save_single(default_catalog_path())
+        self.rebuild()
+        if self.on_changed:
+            self.on_changed()
+
+    def _move_service_to_new_category(self, service) -> None:
+        from app.catalog import default_catalog_path
+        name, ok = QInputDialog.getText(self, "Новая категория", "Введите название новой категории:")
+        if ok and name.strip():
+            self._move_service_to_category(service, name.strip())
+
+    def _delete_custom_service(self, service) -> None:
+        from app.catalog import default_catalog_path, load_selection, save_selection
+
+        res = QMessageBox.question(
+            self, "Удаление",
+            f"Вы уверены, что хотите удалить сайт «{service.name}» из каталога?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if res != QMessageBox.Yes:
+            return
+
+        # Удаляем из сохраненных выборов
+        sel = load_selection()
+        if service.name in sel:
+            del sel[service.name]
+            save_selection(sel)
+
+        # Удаляем из каталога
+        self.catalog.remove_service(service.name)
+        self.catalog.save_single(default_catalog_path())
+        self.rebuild()
+        if self.on_changed:
+            self.on_changed()
+        QMessageBox.information(self, "Готово", f"Сайт «{service.name}» удалён.")
+
+    # ------------------------------------------------- category management
+    def _create_category(self) -> None:
+        name, ok = QInputDialog.getText(self, "Создать категорию", "Название новой категории:")
+        if not ok or not name.strip():
+            return
+        cat_name = name.strip()
+        existing = {s.category.casefold() for s in self.catalog.services}
+        if cat_name.casefold() in existing:
+            QMessageBox.information(self, "Информация", "Такая категория уже существует.")
+            return
+
+        from app.gui.add_service_dialog import AddServiceDialog
+        existing_cats = [s.category for s in self.catalog.services] + [cat_name]
+        dlg = AddServiceDialog(existing_cats, self)
+        dlg.cat_combo.setEditText(cat_name)
+        if dlg.exec_() == QDialog.Accepted:
+            self._save_new_service(dlg.get_data())
+
+    def _show_category_context_menu(self, pos, category_name: str) -> None:
+        from PyQt5.QtWidgets import QMenu
+        from app.catalog import default_catalog_path
+
+        menu = QMenu(self)
+        act_ren = menu.addAction(f"✏️ Переименовать категорию «{category_name}»…")
+
+        def rename():
+            new_name, ok = QInputDialog.getText(
+                self, "Переименование категории",
+                "Новое название категории:", text=category_name
+            )
+            if ok and new_name.strip() and new_name.strip() != category_name:
+                self.catalog.rename_category(category_name, new_name.strip())
+                self.catalog.save_single(default_catalog_path())
+                self.rebuild()
+                if self.on_changed:
+                    self.on_changed()
+
+        act_ren.triggered.connect(rename)
+        menu.exec_(self.sender().mapToGlobal(pos))

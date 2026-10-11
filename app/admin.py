@@ -30,7 +30,12 @@ def ensure_admin() -> bool:
     try:
         import ctypes
 
-        params = " ".join(f'"{arg}"' for arg in sys.argv)
+        # При сборке в PyInstaller sys.executable — это сам .exe, аргумент sys.argv[0] дублировать нельзя
+        if getattr(sys, "frozen", False):
+            params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+        else:
+            params = " ".join(f'"{arg}"' for arg in sys.argv)
+
         ctypes.windll.shell32.ShellExecuteW(
             None, "runas", sys.executable, params, None, 1
         )

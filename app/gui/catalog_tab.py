@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Вкладка «Каталог»: просмотр/редактирование/импорт/экспорт каталога,
-а также автозаполнение IP через DoH-резолвер."""
+"""Вкладка «Каталог»: просмотр, редактирование, импорт/экспорт и автозаполнение IP."""
 
 from __future__ import annotations
 
@@ -9,15 +8,23 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTreeWidget,
     QTreeWidgetItem, QMessageBox, QFileDialog, QLabel, QDialog, QComboBox,
     QDialogButtonBox, QTableWidget, QTableWidgetItem, QCheckBox,
-    QHeaderView, QInputDialog, QProgressDialog,
+    QHeaderView, QInputDialog, QProgressDialog, QGroupBox, QMenu,
 )
 
 from app.catalog import Catalog, Service, default_catalog_path
 from app import resolver
+from app.catalog_updater import update_catalog
+
+
+class AutoFillWorker(QThread):
+    done_signal = pyqtSignal(bool)
+
+    def run(self):
+        code = update_catalog(pre_check_ai=True)
+        self.done_signal.emit(code == 0)
 
 
 def _set_profile_ips(svc: Service, host: str, profile_id: str, ips: list[str]) -> None:
-    """Заменяет (не добавляет) список IP для домена в указанном профиле."""
     host = (host or "").strip().casefold()
     if not host or not profile_id:
         return
@@ -36,15 +43,13 @@ def _set_profile_ips(svc: Service, host: str, profile_id: str, ips: list[str]) -
 
 
 class ResolveWorker(QThread):
-    """Фоновое разрешение доменов через DoH."""
-
-    progress = pyqtSignal(int, int, str)          # done, total, текущий домен
-    resolved = pyqtSignal(str, str, list, list)   # service_name, host, ipv4, ipv6
-    finished_all = pyqtSignal(int, int)           # успешно, всего
+    progress = pyqtSignal(int, int, str)
+    resolved = pyqtSignal(str, str, list, list)
+    finished_all = pyqtSignal(int, int)
 
     def __init__(self, tasks, resolver_name, want_ipv6, parent=None) -> None:
         super().__init__(parent)
-        self._tasks = list(tasks)               # [(service_name, host), ...]
+        self._tasks = list(tasks)
         self._resolver = resolver_name
         self._want_ipv6 = bool(want_ipv6)
         self._cancel = False
@@ -72,18 +77,28 @@ class ResolveWorker(QThread):
 
 
 class DomainEditor(QDialog):
-    """Редактор доменов/IP одного сервиса: строки = домены, колонки = профили."""
-
-    def __init__(self, catalog: Catalog, service, parent=None) -> None:
+    def __init__(self, catalog: Catalog, service: Service, parent=None) -> None:
         super().__init__(parent)
         self.catalog = catalog
         self.service = service
         self.setWindowTitle(f"Каталог: {service.name}")
-        self.resize(760, 480)
+        self.resize(780, 500)
 
         layout = QVBoxLayout(self)
+
+        # Выбор / смена категории сервиса
+        cat_box = QHBoxLayout()
+        cat_box.addWidget(QLabel("Категория (группа):"))
+        self.cat_combo = QComboBox()
+        self.cat_combo.setEditable(True)
+        existing_cats = sorted(set(filter(None, [s.category for s in catalog.services])))
+        self.cat_combo.addItems(existing_cats)
+        self.cat_combo.setEditText(service.category or "Остальные")
+        cat_box.addWidget(self.cat_combo, 1)
+        layout.addLayout(cat_box)
+
         layout.addWidget(QLabel(
-            "Строки — домены, колонки — варианты DNS. Несколько IP — через запятую."
+            "Строки — домены, колонки — варианты DNS. Несколько IP вводятся через запятую."
         ))
 
         self.profiles = list(catalog.profiles)
@@ -96,27 +111,8 @@ class DomainEditor(QDialog):
         for host in service.order:
             self._add_row(host, service.domains.get(host, {}))
 
-        # Панель DoH-резолвера
-        doh = QHBoxLayout()
-        doh.addWidget(QLabel("DoH:"))
-        self.resolver_combo = QComboBox()
-        self.resolver_combo.addItems(resolver.resolver_names())
-        doh.addWidget(self.resolver_combo)
-        doh.addWidget(QLabel("→ в вариант:"))
-        self.target_combo = QComboBox()
-        for pid in self.profiles:
-            self.target_combo.addItem(catalog.profile_display(pid), userData=pid)
-        doh.addWidget(self.target_combo)
-        self.ipv6_check = QCheckBox("IPv6")
-        doh.addWidget(self.ipv6_check)
-        resolve_btn = QPushButton("Заполнить IP через DoH")
-        resolve_btn.clicked.connect(self._resolve)
-        doh.addWidget(resolve_btn)
-        doh.addStretch(1)
-        layout.addLayout(doh)
-
         btns = QHBoxLayout()
-        add = QPushButton("+ Домен")
+        add = QPushButton("+ Добавить домен")
         add.clicked.connect(lambda: self._add_row("", {}))
         rm = QPushButton("− Удалить строку")
         rm.clicked.connect(self._remove_row)
@@ -143,74 +139,26 @@ class DomainEditor(QDialog):
         if r >= 0:
             self.table.removeRow(r)
 
-    def _hosts_in_table(self) -> list[str]:
-        hosts = []
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            host = (item.text() if item else "").strip()
-            if host:
-                hosts.append(host)
-        return hosts
-
-    def _resolve(self) -> None:
-        hosts = self._hosts_in_table()
-        if not hosts:
-            QMessageBox.information(self, "Нет доменов", "Сначала добавьте домены.")
-            return
-        target = self.target_combo.currentData()
-        target_col = self.profiles.index(target) + 1
-        want_ipv6 = self.ipv6_check.isChecked()
-        resolver_name = self.resolver_combo.currentText()
-
-        results: dict[str, list[str]] = {}
-        tasks = [("_", h) for h in hosts]
-        worker = ResolveWorker(tasks, resolver_name, want_ipv6, self)
-
-        dlg = QProgressDialog("Разрешение доменов…", "Отмена", 0, len(tasks), self)
-        dlg.setWindowModality(Qt.WindowModal)
-        dlg.canceled.connect(worker.cancel)
-
-        def on_progress(done, total, host):
-            dlg.setValue(done)
-            dlg.setLabelText(f"Разрешение: {host}  ({done}/{total})")
-
-        def on_resolved(_svc, host, ipv4, ipv6):
-            results[host.casefold()] = list(ipv4) + list(ipv6)
-
-        def on_done(ok, total):
-            dlg.setValue(total)
-            # Записываем результаты в столбец целевого варианта
-            for r in range(self.table.rowCount()):
-                item = self.table.item(r, 0)
-                host = (item.text() if item else "").strip().casefold()
-                if host in results and results[host]:
-                    self.table.setItem(r, target_col, QTableWidgetItem(", ".join(results[host])))
-            QMessageBox.information(
-                self, "Готово",
-                f"Разрешено {ok} из {total} доменов через {resolver_name}.",
-            )
-
-        worker.progress.connect(on_progress)
-        worker.resolved.connect(on_resolved)
-        worker.finished_all.connect(on_done)
-        worker.start()
-        dlg.exec_()
-        worker.wait()
-
     def _save(self) -> None:
+        self.service.category = self.cat_combo.currentText().strip() or "Остальные"
         self.service.domains = {}
         self.service.order = []
         for r in range(self.table.rowCount()):
             host_item = self.table.item(r, 0)
-            host = (host_item.text() if host_item else "").strip()
+            host = (host_item.text() if host_item else "").strip().casefold()
             if not host:
                 continue
+            # Сохраняем домен в списке порядка, даже если IP пока не заполнены
+            if host not in self.service.order:
+                self.service.order.append(host)
+            bucket = self.service.domains.setdefault(host, {})
+
             for col, pid in enumerate(self.profiles, start=1):
                 cell = self.table.item(r, col)
                 raw = cell.text() if cell else ""
-                for ip in [x.strip() for x in raw.replace(";", ",").split(",")]:
-                    if ip:
-                        self.service.add_domain_ip(host, pid, ip)
+                ips = [x.strip() for x in raw.replace(";", ",").split(",") if x.strip()]
+                if ips:
+                    bucket[pid] = ips
         self.accept()
 
 
@@ -223,61 +171,88 @@ class CatalogTab(QWidget):
 
         root = QVBoxLayout(self)
 
-        info = QLabel(
-            "Сервисы, их домены и IP по вариантам DNS. Можно импортировать готовый каталог "
-            "или автоматически заполнить IP через DoH-резолвер."
-        )
-        info.setWordWrap(True)
-        info.setStyleSheet("color:#999;")
-        root.addWidget(info)
+        # 1. Верхняя панель: управление сервисами и меню каталога
+        top_bar = QHBoxLayout()
+        add_btn = QPushButton("+ Сервис")
+        add_btn.clicked.connect(self._add_service)
+        edit_btn = QPushButton("Редактировать")
+        edit_btn.clicked.connect(self._edit_service)
+        del_btn = QPushButton("Удалить")
+        del_btn.clicked.connect(self._delete_service)
 
+        top_bar.addWidget(add_btn)
+        top_bar.addWidget(edit_btn)
+        top_bar.addWidget(del_btn)
+        top_bar.addStretch(1)
+
+        # Выпадающее меню «Файл / Каталог»
+        menu_btn = QPushButton("Каталог ▾")
+        file_menu = QMenu(self)
+        file_menu.addAction("Сохранить изменения (catalog.json)", self._save_default)
+        file_menu.addSeparator()
+        file_menu.addAction("Импорт из JSON…", self._import_json)
+        file_menu.addAction("Экспорт в JSON…", self._export_json)
+        file_menu.addAction("Импорт из папки (формат zapret)…", self._import_dir)
+        menu_btn.setMenu(file_menu)
+        top_bar.addWidget(menu_btn)
+
+        save_quick = QPushButton("Сохранить")
+        save_quick.setStyleSheet("font-weight:bold;")
+        save_quick.clicked.connect(self._save_default)
+        top_bar.addWidget(save_quick)
+
+        root.addLayout(top_bar)
+
+        # 2. Центральное дерево каталога
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Сервис / домен", "Варианты с IP"])
-        self.tree.setColumnWidth(0, 360)
+        self.tree.setHeaderLabels(["Сервис / домен", "Варианты с IP-адресами"])
+        self.tree.setColumnWidth(0, 380)
         self.tree.itemDoubleClicked.connect(lambda *_: self._edit_service())
         root.addWidget(self.tree, 1)
 
-        # Панель массового DoH-резолвинга
-        doh = QHBoxLayout()
-        doh.addWidget(QLabel("DoH-резолвер:"))
+        # 3. Блок 1: Автозаполнение рабочих IP нейросетей через SmartDNS (Основное)
+        smart_box = QGroupBox("Обновление обходных IP для нейросетей (SmartDNS)")
+        smart_layout = QHBoxLayout(smart_box)
+        smart_info = QLabel(
+            "Автоматически тестирует SmartDNS (DNS-AI, Comss, GeoHide и др.), находит живые серверы "
+            "и заполняет рабочие прокси-IP для ChatGPT, Claude, Gemini в каталоге."
+        )
+        smart_info.setWordWrap(True)
+        smart_info.setStyleSheet("color:#aaa;")
+        smart_layout.addWidget(smart_info, 1)
+
+        autofill_btn = QPushButton("⚡ Обновить IP через SmartDNS")
+        autofill_btn.setStyleSheet("font-weight:bold; padding:8px 14px;")
+        autofill_btn.clicked.connect(self._start_autofill)
+        smart_layout.addWidget(autofill_btn)
+        root.addWidget(smart_box)
+
+        # 4. Блок 2: Прямой DoH-резолвинг (Дополнительно, для незаблокированных сервисов)
+        direct_box = QGroupBox("Дополнительно: прямое разрешение IP через публичный DoH")
+        direct_layout = QHBoxLayout(direct_box)
+
+        direct_layout.addWidget(QLabel("Резолвер:"))
         self.resolver_combo = QComboBox()
         self.resolver_combo.addItems(resolver.resolver_names())
-        doh.addWidget(self.resolver_combo)
-        doh.addWidget(QLabel("→ вариант:"))
+        direct_layout.addWidget(self.resolver_combo)
+
+        direct_layout.addWidget(QLabel("→ в профиль:"))
         self.target_combo = QComboBox()
         self._reload_target_combo()
-        doh.addWidget(self.target_combo)
-        self.ipv6_check = QCheckBox("IPv6")
-        doh.addWidget(self.ipv6_check)
-        b_one = QPushButton("Заполнить IP: сервис")
-        b_one.clicked.connect(lambda: self._resolve(all_services=False))
-        b_all = QPushButton("Заполнить IP: все")
-        b_all.clicked.connect(lambda: self._resolve(all_services=True))
-        doh.addWidget(b_one)
-        doh.addWidget(b_all)
-        doh.addStretch(1)
-        root.addLayout(doh)
+        direct_layout.addWidget(self.target_combo)
 
-        btns = QHBoxLayout()
-        for text, slot in (
-            ("Импорт JSON", self._import_json),
-            ("Импорт папки (оригинал)", self._import_dir),
-            ("Экспорт JSON", self._export_json),
-        ):
-            b = QPushButton(text)
-            b.clicked.connect(slot)
-            btns.addWidget(b)
-        btns.addStretch(1)
-        for text, slot in (
-            ("+ Сервис", self._add_service),
-            ("Редактировать", self._edit_service),
-            ("Удалить", self._delete_service),
-            ("Сохранить каталог", self._save_default),
-        ):
-            b = QPushButton(text)
-            b.clicked.connect(slot)
-            btns.addWidget(b)
-        root.addLayout(btns)
+        self.ipv6_check = QCheckBox("IPv6")
+        direct_layout.addWidget(self.ipv6_check)
+
+        direct_layout.addStretch(1)
+        b_one = QPushButton("Заполнить для выбранного")
+        b_one.clicked.connect(lambda: self._resolve(all_services=False))
+        b_all = QPushButton("Заполнить для всех")
+        b_all.clicked.connect(lambda: self._resolve(all_services=True))
+        direct_layout.addWidget(b_one)
+        direct_layout.addWidget(b_all)
+
+        root.addWidget(direct_box)
 
         self.rebuild()
 
@@ -297,7 +272,6 @@ class CatalogTab(QWidget):
                 top.addChild(QTreeWidgetItem([host, summary]))
             self.tree.addTopLevelItem(top)
 
-    # ---------------------------------------------------------------- helpers
     def _selected_service(self):
         item = self.tree.currentItem()
         if item is None:
@@ -312,14 +286,13 @@ class CatalogTab(QWidget):
         if self.on_changed:
             self.on_changed()
 
-    # ------------------------------------------------------------- doh resolve
     def _resolve(self, all_services: bool) -> None:
         if not self.catalog.profiles:
-            QMessageBox.warning(self, "Нет вариантов", "Сначала добавьте варианты DNS (профили).")
+            QMessageBox.warning(self, "Нет вариантов", "Сначала добавьте варианты DNS в каталоге.")
             return
         target = self.target_combo.currentData()
         if not target:
-            QMessageBox.warning(self, "Нет варианта", "Выберите вариант (колонку), куда записать IP.")
+            QMessageBox.warning(self, "Нет варианта", "Выберите вариант, куда записать IP.")
             return
 
         if all_services:
@@ -327,7 +300,7 @@ class CatalogTab(QWidget):
         else:
             svc = self._selected_service()
             if not svc:
-                QMessageBox.information(self, "Сервис", "Выберите сервис в списке.")
+                QMessageBox.information(self, "Сервис", "Выберите сервис в списке выше.")
                 return
             services = [svc]
 
@@ -344,7 +317,7 @@ class CatalogTab(QWidget):
         worker = ResolveWorker(tasks, resolver_name, want_ipv6, self)
         self._worker = worker
 
-        dlg = QProgressDialog("Разрешение доменов…", "Отмена", 0, len(tasks), self)
+        dlg = QProgressDialog("Разрешение доменов через DoH…", "Отмена", 0, len(tasks), self)
         dlg.setWindowModality(Qt.WindowModal)
         dlg.canceled.connect(worker.cancel)
 
@@ -363,8 +336,8 @@ class CatalogTab(QWidget):
             QMessageBox.information(
                 self, "Готово",
                 f"Разрешено {ok} из {total} доменов через {resolver_name}.\n"
-                f"IP записаны в вариант «{self.catalog.profile_display(target)}».\n"
-                "Не забудьте «Сохранить каталог».",
+                f"IP записаны в профиль «{self.catalog.profile_display(target)}».\n"
+                "Не забудьте нажать «Сохранить».",
             )
 
         worker.progress.connect(on_progress)
@@ -374,7 +347,6 @@ class CatalogTab(QWidget):
         dlg.exec_()
         worker.wait()
 
-    # ---------------------------------------------------------------- actions
     def _import_json(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Импорт каталога (JSON)", "", "JSON (*.json)")
         if not path:
@@ -410,27 +382,52 @@ class CatalogTab(QWidget):
     def _save_default(self) -> None:
         try:
             self.catalog.save_single(default_catalog_path())
-            QMessageBox.information(self, "Готово", "Каталог сохранён как основной (data/catalog.json).")
+            QMessageBox.information(self, "Готово", "Каталог успешно сохранён в data/catalog.json.")
         except Exception as exc:
             QMessageBox.warning(self, "Ошибка", str(exc))
 
     def _add_service(self) -> None:
-        name, ok = QInputDialog.getText(self, "Новый сервис", "Название сервиса:")
-        if not ok or not name.strip():
+        from app.gui.add_service_dialog import AddServiceDialog
+        existing_cats = [s.category for s in self.catalog.services]
+        dlg = AddServiceDialog(existing_cats, self)
+        if dlg.exec_() != AddServiceDialog.Accepted:
             return
+
+        data = dlg.get_data()
+        name = data["name"]
         if self.catalog.get_service(name):
-            QMessageBox.warning(self, "Ошибка", "Сервис с таким именем уже есть.")
+            QMessageBox.warning(self, "Ошибка", f"Сервис «{name}» уже существует.")
             return
-        self.catalog.services.append(Service(name=name.strip()))
+
+        mode = data["mode"]
+        svc = Service(
+            name=name,
+            category=data["category"],
+            mode=mode,
+        )
+
+        for dom in data["domains"]:
+            if data["ips"]:
+                for ip in data["ips"]:
+                    if mode == "hosts":
+                        svc.add_domain_ip(dom, "hosts", ip)
+                    else:
+                        for pid in self.catalog.profiles:
+                            svc.add_domain_ip(dom, pid, ip)
+            else:
+                svc.order.append(dom)
+
+        self.catalog.services.append(svc)
+        self.catalog.save_single(default_catalog_path())
         self._notify_changed()
 
     def _edit_service(self) -> None:
         svc = self._selected_service()
         if not svc:
-            QMessageBox.information(self, "Сервис", "Выберите сервис.")
+            QMessageBox.information(self, "Сервис", "Выберите сервис для редактирования.")
             return
         if not self.catalog.profiles:
-            QMessageBox.warning(self, "Нет профилей", "Сначала добавьте варианты DNS (профили) в каталоге.")
+            QMessageBox.warning(self, "Нет профилей", "Сначала добавьте варианты DNS в каталоге.")
             return
         dlg = DomainEditor(self.catalog, svc, self)
         if dlg.exec_() == QDialog.Accepted:
@@ -440,6 +437,45 @@ class CatalogTab(QWidget):
         svc = self._selected_service()
         if not svc:
             return
-        if QMessageBox.question(self, "Удалить", f"Удалить сервис «{svc.name}»?") == QMessageBox.Yes:
+        if not getattr(svc, "custom", False):
+            QMessageBox.information(
+                self, "Защита данных",
+                f"Сервис «{svc.name}» является встроенным. "
+                "Его нельзя удалить, но вы можете отключить его галочкой на вкладке «Сайты (hosts)»."
+            )
+            return
+
+        if QMessageBox.question(self, "Удалить", f"Удалить пользовательский сервис «{svc.name}»?") == QMessageBox.Yes:
             self.catalog.services = [s for s in self.catalog.services if s is not svc]
+            self.catalog.save_single(default_catalog_path())
             self._notify_changed()
+
+    def _start_autofill(self) -> None:
+        msg = QMessageBox.question(
+            self,
+            "Автозаполнение каталога",
+            "Запустить онлайн-проверку DoH SmartDNS и обновление IP-адресов в catalog.json?\n\n"
+            "Скрипт протестирует доступность ChatGPT, Claude и Google AI, отберет живые шлюзы "
+            "и запишет актуальные адреса для обхода геоблокировок.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if msg != QMessageBox.Yes:
+            return
+
+        prog = QProgressDialog("Опрос SmartDNS и наполнение каталога…", None, 0, 0, self)
+        prog.setWindowModality(Qt.WindowModal)
+        prog.show()
+
+        self._af_worker = AutoFillWorker(self)
+
+        def on_done(ok):
+            prog.close()
+            if ok:
+                self.catalog.load_single(default_catalog_path())
+                self._notify_changed()
+                QMessageBox.information(self, "Готово", "Каталог успешно обновлен рабочими IP от SmartDNS!")
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось обновить каталог.")
+
+        self._af_worker.done_signal.connect(on_done)
+        self._af_worker.start()

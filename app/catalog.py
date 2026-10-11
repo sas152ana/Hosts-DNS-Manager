@@ -14,6 +14,8 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+import shutil
+import sys
 
 HOSTS_PROFILE_ID = "hosts"
 HOSTS_PROFILE_NAME = "Вкл. (ручной hosts)"
@@ -31,6 +33,22 @@ def _as_ip_list(raw: object) -> list[str]:
     v = _clean(raw)
     return [v] if v else []
 
+# Базовые системные сервисы каталога (защищены от удаления)
+BUILTIN_SERVICE_NAMES = {
+    "discord", "youtube", "github", "whatsapp", "x.com / twitter", "rutor",
+    "ntc.party", "discord (голосовые серверы, flowseal)", "supercell", "instagram",
+    "chatgpt & sora (openai)", "gemini ai", "notebooklm", "claude",
+    "microsoft (copilot, designer, xbox)", "grok", "manus", "meta ai",
+    "trae.ai", "windsurf", "notion", "tiktok", "spotify", "twitch", "deepl",
+    "canva", "elevenlabs", "jetbrains", "amd", "autodesk", "badoo",
+    "broadcom", "chess", "deezer", "dell", "dyson", "elgato", "fitbit",
+    "fmhy", "framer", "guidedhacking", "guilded", "imgur", "intel",
+    "linear.app", "make", "naukri", "nvidia", "oracle", "patreon",
+    "posthog", "pump.fun", "qwant", "reve", "sketchup", "strava",
+    "tableau", "tailscale", "teamviewer", "tria.ge", "truth social",
+    "tuta", "weather underground", "weather.com", "web archive",
+    "workos", "xerox", "остальное", "блокировка adobe"
+}
 
 @dataclass
 class Service:
@@ -39,6 +57,7 @@ class Service:
     color: str = "#6c757d"
     category: str = ""
     mode: str = MODE_DNS
+    custom: bool = False  # True для сервисов, добавленных пользователем
     # domain (lower) -> {profile_id: [ip, ...]}
     domains: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     order: list[str] = field(default_factory=list)  # порядок доменов
@@ -151,12 +170,18 @@ class Catalog:
             if not name:
                 continue
             mode = MODE_HOSTS if _clean(raw.get("mode")).lower() in (MODE_HOSTS, "direct") else MODE_DNS
+            # Сервис считается пользовательским, если явно помечен или отсутствует в списке встроенных
+            is_custom = bool(raw.get("custom", False))
+            if not is_custom and name.casefold() not in BUILTIN_SERVICE_NAMES:
+                is_custom = True
+
             svc = Service(
                 name=name,
                 icon=_clean(raw.get("icon")),
                 color=_clean(raw.get("color")) or "#6c757d",
                 category=_clean(raw.get("category")),
                 mode=mode,
+                custom=is_custom,
             )
             if mode == MODE_HOSTS:
                 self.ensure_profile(HOSTS_PROFILE_ID, HOSTS_PROFILE_NAME)
@@ -226,14 +251,17 @@ class Catalog:
             domains_out = []
             for host in svc.order:
                 domains_out.append({"host": host, "ips": svc.domains.get(host, {})})
-            services_out.append({
+            item_dict = {
                 "name": svc.name,
                 "icon": svc.icon,
                 "color": svc.color,
                 "category": svc.category,
                 "mode": svc.mode,
                 "domains": domains_out,
-            })
+            }
+            if svc.custom:
+                item_dict["custom"] = True
+            services_out.append(item_dict)
         return {
             "version": 1,
             "profiles": [{"id": pid, "name": self.profile_names[pid]} for pid in self.profiles],
@@ -245,14 +273,55 @@ class Catalog:
             json.dumps(self.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+    def remove_service(self, name: str) -> bool:
+        """Удаляет сервис по имени."""
+        key = _clean(name).casefold()
+        for i, s in enumerate(self.services):
+            if s.name.casefold() == key:
+                del self.services[i]
+                return True
+        return False
+
+    def rename_category(self, old_cat: str, new_cat: str) -> None:
+        """Переименовывает категорию у всех сервисов."""
+        old_cat = _clean(old_cat).casefold()
+        new_cat = _clean(new_cat)
+        if not new_cat:
+            return
+        for s in self.services:
+            if s.category.casefold() == old_cat:
+                s.category = new_cat
+
+
+
+
+def get_app_dir() -> Path:
+    """Возвращает постоянную директорию приложения (папку с .exe или корень проекта)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def default_catalog_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "data" / "catalog.json"
+    target_dir = get_app_dir() / "data"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / "catalog.json"
+
+    # Если в рабочей папке рядом с .exe еще нет каталога, берем bundled копию
+    if not target_file.exists() and getattr(sys, "frozen", False):
+        bundled = getattr(sys, "_MEIPASS", None)
+        if bundled:
+            src = Path(bundled) / "data" / "catalog.json"
+            if src.exists():
+                shutil.copy2(src, target_file)
+
+    return target_file
 
 
 def settings_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "data" / "settings.json"
+    target_dir = get_app_dir() / "data"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / "settings.json"
 
 
 def load_selection() -> dict[str, str]:

@@ -1,0 +1,17 @@
+{
+  "hosts_selection": {
+    "ChatGPT & Sora (OpenAI)": "geohide_eu",
+    "Gemini AI": "geohide_eu",
+    "NotebookLM": "geohide_eu",
+    "Claude": "geohide_eu",
+    "Microsoft (Copilot, Designer, Xbox)": "geohide_eu",
+    "Grok": "geohide_eu",
+    "Manus": "geohide_eu",
+    "Meta AI": "geohide_eu",
+    "Trae.ai": "geohide_eu",
+    "Windsurf": "geohide_eu",
+    "Notion": "geohide_eu",
+    "JetBrains": "xbox",
+    "Блокировка Adobe": "hosts"
+  }
+}

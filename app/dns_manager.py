@@ -111,36 +111,65 @@ def _list_adapters_winapi() -> list[str]:
     p = ctypes.cast(buf, ctypes.POINTER(IP_ADAPTER_ADDRESSES))
     while p:
         a = p.contents
-        # IfOperStatusUp == 1 — только подключённые; IfType 24 = loopback — пропускаем
-        if a.OperStatus == 1 and a.IfType != 24 and a.FriendlyName:
-            names.append(a.FriendlyName)
+        # IfType 24 = loopback (пропускаем). Показываем все реальные адаптеры (Wi-Fi, Ethernet и др.)
+        if a.IfType != 24 and a.FriendlyName:
+            name = str(a.FriendlyName).strip()
+            if name and name not in names:
+                names.append(name)
         p = a.Next
     return names
 
 
-def list_adapters() -> list[str]:
-    """Список имён подключённых сетевых адаптеров."""
-    if os.name != "nt":
-        return ["eth0 (демо)", "wlan0 (демо)"]
-    # Основной путь — WinAPI (корректные Unicode-имена, включая кириллицу)
+def _list_adapters_powershell() -> list[str]:
+    """Резервный путь: получение имен адаптеров через PowerShell."""
     try:
-        names = _list_adapters_winapi()
-        if names:
-            return names
+        code, out = _run([
+            "powershell", "-NoProfile", "-Command",
+            "Get-NetAdapter | Where-Object { $_.Status -ne 'Disabled' } | Select-Object -ExpandProperty Name"
+        ])
+        if code == 0 and out.strip():
+            return [line.strip() for line in out.splitlines() if line.strip()]
     except Exception:
         pass
-    # Запасной путь — разбор вывода netsh
-    code, out = _run(["netsh", "interface", "show", "interface"])
+    return []
+
+
+def list_adapters() -> list[str]:
+    """Список имён сетевых адаптеров (Ethernet, Wi-Fi и др.)."""
+    if os.name != "nt":
+        return ["eth0 (демо)", "wlan0 (демо)"]
+
     adapters: list[str] = []
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        if parts[0].lower() in ("admin", "состояние", "админ") or "---" in line:
-            continue
-        name = " ".join(parts[3:]).strip()
-        if name:
-            adapters.append(name)
+
+    # 1. Мгновенный опрос WinAPI (нативный Unicode, охватывает все типы без задержек)
+    try:
+        win_adapters = _list_adapters_winapi()
+        for name in win_adapters:
+            if name not in adapters:
+                adapters.append(name)
+    except Exception:
+        pass
+
+    # 2. Резерв через PowerShell Get-NetAdapter
+    if not adapters:
+        ps_adapters = _list_adapters_powershell()
+        for name in ps_adapters:
+            if name not in adapters:
+                adapters.append(name)
+
+    # 3. Резерв через netsh
+    if not adapters:
+        code, out = _run(["netsh", "interface", "show", "interface"])
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            if parts[0].lower() in ("admin", "состояние", "админ", "state") or "---" in line:
+                continue
+            name = " ".join(parts[3:]).strip()
+            if name and name not in adapters:
+                adapters.append(name)
+
     return adapters
 
 
