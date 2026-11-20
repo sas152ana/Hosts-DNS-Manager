@@ -1,17 +1,150 @@
 {
   "hosts_selection": {
-    "ChatGPT & Sora (OpenAI)": "geohide_eu",
-    "Gemini AI": "geohide_eu",
-    "NotebookLM": "geohide_eu",
-    "Claude": "geohide_eu",
-    "Microsoft (Copilot, Designer, Xbox)": "geohide_eu",
-    "Grok": "geohide_eu",
-    "Manus": "geohide_eu",
-    "Meta AI": "geohide_eu",
-    "Trae.ai": "geohide_eu",
-    "Windsurf": "geohide_eu",
-    "Notion": "geohide_eu",
-    "JetBrains": "xbox",
-    "Блокировка Adobe": "hosts"
-  }
+    "ChatGPT & Sora (OpenAI)": "custom_pereval",
+    "Gemini AI": "custom_pereval",
+    "NotebookLM": "custom_pereval",
+    "Claude": "custom_pereval",
+    "Microsoft (Copilot, Designer, Xbox)": "custom_pereval",
+    "Grok": "custom_pereval",
+    "Manus": "custom_pereval",
+    "Meta AI": "custom_pereval",
+    "Trae.ai": "custom_pereval",
+    "Windsurf": "custom_pereval",
+    "Notion": "custom_pereval",
+    "ElevenLabs": "custom_pereval",
+    "JetBrains": "custom_pereval",
+    "Autodesk": "custom_pereval",
+    "Fusion": "custom_pereval",
+    "openrouter": "custom_pereval",
+    "dewin": "custom_pereval"
+  },
+  "custom_dns": [
+    {
+      "name": "Bezmezhau DNS",
+      "doh": "https://dns.bezmezhau.com/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "WebShift DNS",
+      "doh": "https://dns.webshiftvpn.ru/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "MagicDNS",
+      "doh": "https://dns.magicdns.ru/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "WL DNS (WLRUS)",
+      "doh": "https://dns.wlrus.cfd/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Dagami DNS",
+      "doh": "https://dns.dagami.ru/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Zapret Moe DNS",
+      "doh": "https://dns.zapret.moe/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "RussiaFancyLists DoH Gateway (Cloudflare)",
+      "doh": "https://ys39tfku2v.cloudflare-gateway.com/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "403.online (Иран)",
+      "doh": "https://dns.403.online/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Shecan (Иран)",
+      "doh": "https://free.shecan.ir/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Electro DNS (Иран)",
+      "doh": "https://dns.electrotm.org/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "DNS AI",
+      "doh": "https://dns.dns-ai.ru/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Astracat",
+      "doh": "https://dns.astracat.ru/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "WLRus",
+      "doh": "https://dns.wlrus.cfd/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "KeyOneDay",
+      "doh": "https://dns.keyoneday.ru/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Geodema",
+      "doh": "https://dns.geodema.love/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Pereval",
+      "doh": "https://free.pereval.top/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Commonnet",
+      "doh": "https://dns.commonnet.work/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Mafioznik",
+      "doh": "https://dns.mafioznik.xyz/dns-query",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Shecan",
+      "doh": "https://shecan.ir",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Semqka",
+      "doh": "https://semqka.xyz",
+      "ipv4": [],
+      "ipv6": []
+    },
+    {
+      "name": "Zombiez",
+      "doh": "https://zombiez.ru",
+      "ipv4": [],
+      "ipv6": []
+    }
+  ],
+  "theme": "dark"
 }
